@@ -34,7 +34,11 @@ st.set_page_config(page_title="Career Paths", layout="wide")
 
 @st.cache_data
 def load_data():
-    cand_ranking = pd.read_excel(DATA_DIR / "candidate_matches.xlsx", sheet_name="Ranking")
+    """Preferuj wersje '_deploy' (mniejsze) dla publikacji na Streamlit Cloud."""
+    cand_path = DATA_DIR / "candidate_matches_deploy.xlsx"
+    if not cand_path.exists():
+        cand_path = DATA_DIR / "candidate_matches.xlsx"
+    cand_ranking = pd.read_excel(cand_path, sheet_name="Ranking")
     pro_debut = pd.read_excel(DATA_DIR / "pro_career_paths.xlsx", sheet_name="Pro debiut")
     pro_detail = pd.read_excel(DATA_DIR / "pro_career_paths.xlsx", sheet_name="Detale")
     return cand_ranking, pro_debut, pro_detail
