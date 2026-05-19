@@ -102,6 +102,37 @@ st.sidebar.divider()
 st.sidebar.caption(f"Kandydaci: {len(cand_ranking)}")
 st.sidebar.caption(f"Pro-gracze: {len(pro_debut)}")
 
+with st.sidebar.expander("ℹ️ Jak to działa"):
+    st.markdown("""
+**Cel:** identyfikacja kandydatów na poziom centralny (Ekstraklasa / 1L / 2L) 
+przez porównanie ich ścieżki kariery do zawodników którzy już to osiągnęli.
+
+**Skala lig (1–13):**
+13 = Ekstraklasa · 12 = 1. Liga · 11 = 2. Liga · 10 = 3. Liga · 
+9 = 4. Liga / CLJ U-19 · 8 = 5. Liga / CLJ U-18 · 7 = Okręg / CLJ U-17 · 
+6 = Kl. A / A2 · 5 = Kl. B / A1 / CLJ U-15 · 4 = Kl. C / B1 / B2 · 
+3 = C1/C2 · 2 = D1/D2 · 1 = E1/E2
+
+**Aktywność:** wyliczana z % maks. minut sezonu w danej lidze (P95):
+podstawowy (≥70%) · regularny (40–70%) · rezerwowy (15–40%) · sporadyczny (<15%)
+
+**Matching (kandydat → pro):** porównanie *wiek-do-wieku* na 4 ostatnich sezonach.
+Dla każdej trójki (poziom, minuty, score) liczymy procent zgodności:
+- **% level** — różnica poziomów lig (max 13)
+- **% min** — różnica minut (cap 2000/sezon)
+- **% score** — różnica match score (cap 0.7)
+- **% total** — średnia z powyższych
+
+**Pula referencyjna:** TOP-1000 pro-graczy wg `overall_score` z 4 ostatnich 
+sezonów Ekstraklasy, z minimum 3 sezonami historii przed debiutem.
+
+**Filtry kandydatów:** wiek 15–26, ≥600 min w sezonie 25/26, w pulu kandydackiej
+(3. Liga → Klasa C u seniorów + CLJ/A1/A2/B1/B2 u juniorów).
+
+**Ocena (0–100):** ważona kombinacja obecnego poziomu (25%), minut (20%), score (15%),
+aktywności (15%) i jakości matcha z pro (25%).
+    """)
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # STRONA 1: RANKING
