@@ -1,0 +1,33 @@
+# Hasła i venv
+.env
+__pycache__/
+*.pyc
+
+# Stare wersje
+v1/
+
+# Excel/LibreOffice lock files
+*~lock*
+*.~lock*
+
+# Duże oryginalne dane (NIE wgrywaj!)
+data/candidates.csv
+data/teamy_kluby_25_26 - teamy_kluby_25_26.csv
+data/wyniki_potencjal_v7.csv
+
+# Pliki pomocnicze które nie są potrzebne dashboardowi
+benchmark.csv
+top_score.csv
+candidates.csv
+data/benchmark.csv
+data/top_score.csv
+data/path_aggregates_*.csv
+data/path_transitions.csv
+data/rank_p_ranked*.csv
+
+# Wynikowe pliki użytkownika
+result_export.csv
+result_export.xlsx
+
+# DUŻY oryginał candidate_matches (zostaje tylko deploy)
+data/candidate_matches.xlsx
