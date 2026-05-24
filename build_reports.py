@@ -69,6 +69,37 @@ def activity_from_pct(pct):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# KALIBRACJA — z backtestów 21/22, 22/23, 23/24 (3 niezależne punkty)
+# ══════════════════════════════════════════════════════════════════════════════
+# Mapa: przedział oceny → realny % zawodników którzy faktycznie zadebiutowali
+# na szczeblu centralnym. Liczby z backtestu (uśrednione), NIE zgadywane.
+#
+# Ocena 85+   → 18.9%    (prawdziwi wyjątkowi — rzadcy)
+# Ocena 80-85 →  3.5%
+# Ocena 75-80 →  3.1%
+# Ocena 70-75 →  1.5%
+# Ocena <70   → ~0.5%    (poziom bazowy / szum)
+
+def calibrated_probability(ocena):
+    """Zwraca szacowaną szansę debiutu (%) na podstawie krzywej z backtestu."""
+    if ocena >= 85:  return 18.9
+    if ocena >= 80:  return 3.5
+    if ocena >= 75:  return 3.1
+    if ocena >= 70:  return 1.5
+    if ocena >= 60:  return 0.7
+    return 0.4
+
+
+def status_from_ocena(ocena):
+    """Nowe progi przecechowane na backteście (85/80/75/70)."""
+    if   ocena >= 85: return "★★★ Wyjątkowy"
+    elif ocena >= 80: return "★★ Wysoki"
+    elif ocena >= 75: return "★ Obiecujący"
+    elif ocena >= 70: return "Obserwacja"
+    else:             return "Tło"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # 1. WCZYTAJ DANE + MAPOWANIE CZYSTYCH NAZW
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -585,11 +616,8 @@ for idx, (pid, grp) in enumerate(cand_seasons.groupby("player_id"), 1):
     raw = 0.25*lvl_s + 0.20*min_s + 0.15*scr_s + 0.15*act_s + 0.25*match_s
     ocena = round(raw * 100, 1)
 
-    if   ocena >= 75: status = "★★★ Wyjątkowy"
-    elif ocena >= 60: status = "★★ Wysoki"
-    elif ocena >= 45: status = "★ Obiecujący"
-    elif ocena >= 30: status = "Obserwacja"
-    else:             status = "Poniżej"
+    status = status_from_ocena(ocena)
+    szansa = calibrated_probability(ocena)
 
     # Historia kandydata
     cand_history = []
@@ -665,6 +693,7 @@ for idx, (pid, grp) in enumerate(cand_seasons.groupby("player_id"), 1):
         "activity":    cur_activity,
         "ocena":       ocena,
         "status":      status,
+        "szansa":      szansa,
         "history":     cand_history,
         "pro_matches": pro_histories,
         "cand_ages":   cand_ages,  # zapamiętaj dla highlight
@@ -790,7 +819,7 @@ def build_ranking_sheet(wb, results):
     headers = [
         "#", "Zawodnik", "Klub", "Wiek", "Obecny poziom",
         "Minuty", "Mecze", "Score", "Aktywność",
-        "Ocena", "Status",
+        "Ocena", "Status", "Szansa %",
         "Match #1 (główny)", "M1 wiek deb.",
     ]
     # 4 sezony kandydata × 4 parametry = 16
@@ -815,7 +844,7 @@ def build_ranking_sheet(wb, results):
         row = [
             i, r["name"], r["club"], r["age"], r["level_name"],
             r["minutes"], r["matches"], r["score"], r["activity"],
-            r["ocena"], r["status"],
+            r["ocena"], r["status"], f"~{r['szansa']}%",
         ]
         # Match #1 info
         main = r["pro_matches"][0] if r["pro_matches"] else None
@@ -892,35 +921,35 @@ def build_ranking_sheet(wb, results):
         # Sekcja KANDYDAT (kolumny 14-29, czyli kolumny "K s-3..." to col 14, 16 sekcji)
         # info kandydata + match name = 13 kolumn
         # K-sekcja: 4 sezony × 4 param = 16 kolumn → 14..29
-        for col_idx in range(14, 14 + 16):
+        for col_idx in range(15, 15 + 16):
             ws.cell(row=row_num, column=col_idx).fill = FILL_CAND
         # M1-sekcja: 16 kolumn → 30..45
-        for col_idx in range(30, 30 + 16):
+        for col_idx in range(31, 31 + 16):
             ws.cell(row=row_num, column=col_idx).fill = FILL_MAIN
         # Procenty: 46..49
-        for col_idx in range(46, 50):
+        for col_idx in range(47, 51):
             ws.cell(row=row_num, column=col_idx).fill = FILL_MAIN
         # Backupy: 50+
-        for col_idx in range(50, 54):
+        for col_idx in range(51, 55):
             ws.cell(row=row_num, column=col_idx).fill = FILL_BACKUP
 
     # ── Kolorowanie nagłówków sekcji ──────────────────────────────────────────
     # Drugi rząd nagłówków byłby ładny ale openpyxl jest średni w merge — zostawmy
     # tylko fill kolorystyczny w wierszu 1 nagłówków po kolumnach
-    for col_idx in range(14, 14 + 16):
+    for col_idx in range(15, 15 + 16):
         ws.cell(row=1, column=col_idx).fill = PatternFill("solid", start_color="C5A800")
-    for col_idx in range(30, 30 + 16):
+    for col_idx in range(31, 31 + 16):
         ws.cell(row=1, column=col_idx).fill = PatternFill("solid", start_color="305496")
-    for col_idx in range(46, 50):
+    for col_idx in range(47, 51):
         ws.cell(row=1, column=col_idx).fill = PatternFill("solid", start_color="A5A5A5")
-    for col_idx in range(50, 54):
+    for col_idx in range(51, 55):
         ws.cell(row=1, column=col_idx).fill = PatternFill("solid", start_color="808080")
 
     # ── Szerokości kolumn ─────────────────────────────────────────────────────
     widths = [
         5, 24, 32, 6, 22,    # # nazwisko klub wiek poziom
         8, 7, 8, 14,         # min mecze score aktywność
-        8, 16,               # ocena status
+        8, 16, 10,           # ocena status szansa
         22, 11,              # match #1 + wiek deb.
     ]
     # 4 sezony kandydata × 4 param

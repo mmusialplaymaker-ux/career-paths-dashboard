@@ -89,6 +89,16 @@ def lvl_name(n):
     return LEVEL_NAMES.get(int(n), f"poziom {int(n)}")
 
 
+def calibrated_probability(ocena):
+    """Szacowana szansa debiutu (%) — z backtestu 21/22, 22/23, 23/24."""
+    if ocena >= 85:  return 18.9
+    if ocena >= 80:  return 3.5
+    if ocena >= 75:  return 3.1
+    if ocena >= 70:  return 1.5
+    if ocena >= 60:  return 0.7
+    return 0.4
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # SIDEBAR
 # ══════════════════════════════════════════════════════════════════════════════
@@ -96,7 +106,8 @@ def lvl_name(n):
 st.sidebar.title("⚽ Career Paths")
 page = st.sidebar.radio(
     "Strona",
-    ["📊 Ranking kandydatów", "🔍 Szczegóły kandydata", "📚 Encyklopedia pro"],
+    ["📊 Ranking kandydatów", "🔍 Szczegóły kandydata", "📚 Encyklopedia pro",
+     "✅ Walidacja modelu"],
 )
 st.sidebar.divider()
 st.sidebar.caption(f"Kandydaci: {len(cand_ranking)}")
@@ -168,7 +179,7 @@ if page == "📊 Ranking kandydatów":
     show_cols = [
         "#", "Zawodnik", "Klub", "Wiek", "Obecny poziom",
         "Minuty", "Mecze", "Score", "Aktywność",
-        "Ocena", "Status",
+        "Ocena", "Status", "Szansa %",
         "Match #1 (główny)", "% level", "% min", "% score", "% total",
         "Match #2 (backup)", "Match #3 (backup)",
     ]
@@ -239,6 +250,8 @@ elif page == "🔍 Szczegóły kandydata":
         st.markdown(f"**Score:** {cand['Score']}")
         st.markdown(f"**Ocena:** {cand['Ocena']} / 100")
         st.markdown(f"**Status:** {cand['Status']}")
+        _szansa = calibrated_probability(cand["Ocena"])
+        st.success(f"**Szacowana szansa na centralny: ~{_szansa}%**")
 
     def render_pro_card(col, pro_row, label, cand):
         with col:
@@ -414,7 +427,7 @@ elif page == "🔍 Szczegóły kandydata":
 # STRONA 3: ENCYKLOPEDIA PRO — uproszczona
 # ══════════════════════════════════════════════════════════════════════════════
 
-else:
+elif page == "📚 Encyklopedia pro":
     st.title("Encyklopedia pro-graczy")
     st.caption("Wszyscy zawodnicy z debiutem w Ekstraklasie / 1. Lidze / 2. Lidze (≥3 sezony historii)")
 
@@ -485,3 +498,117 @@ else:
                     height=400,
                 )
                 st.plotly_chart(fig, width="stretch")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# STRONA 4: WALIDACJA MODELU
+# ══════════════════════════════════════════════════════════════════════════════
+
+elif page == "✅ Walidacja modelu":
+    st.title("Walidacja modelu — backtest")
+    st.markdown("""
+Model sprawdzono metodą **retrospekcji**: cofamy się do końca danego sezonu,
+generujemy predykcję widząc TYLKO dane do tego momentu, a potem sprawdzamy
+w pełnych danych ilu z wytypowanych zawodników **faktycznie zadebiutowało**
+na szczeblu centralnym (Ekstraklasa / 1. Liga / 2. Liga) w kolejnych sezonach.
+""")
+
+    # Spróbuj wczytać pliki backtestów
+    backtests = {}
+    for label, fname, n_seasons in [
+        ("21/22", "backtest_21_22.csv", 4),
+        ("22/23", "backtest_22_23.csv", 3),
+        ("23/24", "backtest_23_24.csv", 2),
+    ]:
+        p = DATA_DIR / fname
+        if p.exists():
+            backtests[label] = (pd.read_csv(p, encoding="utf-8-sig"), n_seasons)
+
+    if not backtests:
+        st.warning("Brak plików backtest_*.csv w folderze data/. "
+                   "Uruchom `python backtest.py 21/22` itd.")
+        st.stop()
+
+    # ── Precision @ K ─────────────────────────────────────────────────────────
+    st.subheader("🎯 Precision @ K — trafność czołówki rankingu")
+    st.caption("Z TOP-K rekomendacji ilu % faktycznie zadebiutowało. "
+               "Bazowy odsetek (losowy zawodnik) to ~0.5–0.8%.")
+
+    rows = []
+    for label, (df, n_seasons) in backtests.items():
+        df = df.sort_values("ocena", ascending=False).reset_index(drop=True)
+        base = df["debuted_after"].mean()
+        for k in [10, 25, 50, 100, 250]:
+            if k > len(df):
+                continue
+            prec = df.head(k)["debuted_after"].mean()
+            rows.append({
+                "Cutoff": label,
+                "Okno (sezony)": n_seasons,
+                "TOP K": k,
+                "Trafność %": round(prec * 100, 1),
+                "Lift": f"{prec/base:.0f}x" if base > 0 else "—",
+            })
+    prec_df = pd.DataFrame(rows)
+    st.dataframe(prec_df, width="stretch", hide_index=True)
+
+    # Wykres precision@K
+    fig = go.Figure()
+    for label, (df, _) in backtests.items():
+        df = df.sort_values("ocena", ascending=False).reset_index(drop=True)
+        ks = [10, 25, 50, 100, 250, 500]
+        precs = [df.head(k)["debuted_after"].mean() * 100 for k in ks if k <= len(df)]
+        fig.add_trace(go.Scatter(x=ks[:len(precs)], y=precs, mode="lines+markers",
+                                 name=f"Cutoff {label}"))
+    fig.update_layout(title="Precision @ K dla 3 punktów odcięcia",
+                      xaxis_title="TOP K rekomendacji", yaxis_title="% zadebiutowało",
+                      height=400)
+    st.plotly_chart(fig, width="stretch")
+
+    # ── Kalibracja ────────────────────────────────────────────────────────────
+    st.subheader("📊 Kalibracja — ocena vs realna szansa debiutu")
+    st.caption("Łączymy wszystkie 3 backtesty. To podstawa kolumny 'Szansa %'.")
+
+    allb = pd.concat([df for df, _ in backtests.values()], ignore_index=True)
+    bins = [0, 30, 40, 50, 60, 70, 75, 80, 85, 100]
+    allb["bin"] = pd.cut(allb["ocena"], bins)
+    calib = allb.groupby("bin", observed=True).agg(
+        N=("debuted_after", "size"),
+        debiut_pct=("debuted_after", lambda s: round(s.mean() * 100, 1)),
+    ).reset_index()
+    calib["bin"] = calib["bin"].astype(str)
+    calib.columns = ["Przedział oceny", "N", "Debiut %"]
+    st.dataframe(calib, width="stretch", hide_index=True)
+
+    fig2 = go.Figure()
+    fig2.add_trace(go.Bar(x=calib["Przedział oceny"], y=calib["Debiut %"]))
+    fig2.update_layout(title="Im wyższa ocena, tym wyższa realna szansa debiutu",
+                       xaxis_title="Przedział oceny", yaxis_title="% zadebiutowało",
+                       height=400)
+    st.plotly_chart(fig2, width="stretch")
+
+    # ── Trafność wg wieku ─────────────────────────────────────────────────────
+    st.subheader("👶 Trafność wg wieku")
+    st.caption("Młodsi mają mniej czasu na debiut (cenzurowanie), ale i tak "
+               "model najlepiej typuje właśnie młodych.")
+    age_rows = []
+    for label, (df, _) in backtests.items():
+        for lo, hi, lbl in [(15, 18, "15-18"), (19, 21, "19-21"), (22, 26, "22-26")]:
+            sub = df[(df["age"] >= lo) & (df["age"] <= hi)]
+            top = sub.sort_values("ocena", ascending=False).head(max(1, len(sub) // 20))  # top 5%
+            if len(sub) == 0:
+                continue
+            age_rows.append({
+                "Cutoff": label, "Wiek": lbl,
+                "Cała grupa %": round(sub["debuted_after"].mean() * 100, 1),
+                "TOP 5% grupy %": round(top["debuted_after"].mean() * 100, 1),
+            })
+    st.dataframe(pd.DataFrame(age_rows), width="stretch", hide_index=True)
+
+    st.info("""
+**Wniosek:** czołówka rankingu trafia 25–50× lepiej niż losowe typowanie,
+i wzorzec powtarza się na 3 niezależnych punktach w czasie. Model ma realną
+moc predykcyjną — szczególnie dla młodych zawodników. Pełna szansa nawet dla
+najlepszych to ~19%, bo dotarcie na szczebel centralny jest po prostu rzadkie
+(bazowo <1%).
+""")
