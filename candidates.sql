@@ -1,11 +1,13 @@
 -- ════════════════════════════════════════════════════════════════════════════
--- candidates.sql (v4)
+-- candidates.sql (v5)
 -- ════════════════════════════════════════════════════════════════════════════
--- v4 dodaje:
---   • last_club_id, last_team_id — wybrane chronologicznie po match_date
---     (zamiast po liczbie minut). Jeśli zawodnik zmienił klub w sezonie,
---     widzimy KLUB AKTUALNY, nie ten z większą liczbą minut.
---   • dominant_club_id zachowane jako fallback
+-- v5 dodaje:
+--   • ever_central (bool) — czy kandydat KIEDYKOLWIEK grał w E/1L/2L.
+--     Służy do rozdzielenia: czysty debiutant (false) vs powracający (true).
+--     Powracający trafiają do osobnej kategorii w build_reports.py.
+-- v4 dodało:
+--   • last_club_id, last_team_id — chronologicznie po match_date
+--   • dominant_club_id jako fallback
 -- ════════════════════════════════════════════════════════════════════════════
 
 WITH active_candidates AS MATERIALIZED (
@@ -42,6 +44,20 @@ WITH active_candidates AS MATERIALIZED (
       AND m.minutes > 0
     GROUP BY m.player_id
     HAVING SUM(m.minutes) >= 600
+),
+ever_central AS MATERIALIZED (
+    -- Czy kandydat KIEDYKOLWIEK (w dowolnym sezonie) grał w E/1L/2L.
+    -- Służy do rozdzielenia: czysty debiutant vs powracający z wyższego poziomu.
+    SELECT DISTINCT m.player_id
+    FROM pm_player_match_stats m
+    JOIN active_candidates ac ON m.player_id = ac.player_id
+    WHERE m.league_id IN (
+            '337bb869-0b42-484f-8eca-0c8842a13ec9',  -- Ekstraklasa
+            '50e40483-e8dc-4e4b-9f58-a83f93a54d9a',  -- 1. Liga
+            '5f26d625-e72e-4aa5-9ffe-451025c18e3a'   -- 2. Liga
+      )
+      AND m.minutes > 0
+      AND m.is_keeper = false
 ),
 tracked_leagues AS (
     SELECT _id FROM (VALUES
@@ -149,11 +165,13 @@ SELECT
     h.last_team_id,
     t2.name AS team_name_last,
     h.first_match_date,
-    h.last_match_date
+    h.last_match_date,
+    CASE WHEN ec.player_id IS NOT NULL THEN true ELSE false END AS ever_central
 FROM candidate_history h
 JOIN leagues l ON h.league_id = l._id
 LEFT JOIN clubs c1 ON h.dominant_club_id = c1._id
 LEFT JOIN teams t1 ON h.dominant_team_id = t1._id
 LEFT JOIN clubs c2 ON h.last_club_id = c2._id
 LEFT JOIN teams t2 ON h.last_team_id = t2._id
+LEFT JOIN ever_central ec ON h.player_id = ec.player_id
 ORDER BY h.player_id, h.age_in_season, h.league_id;

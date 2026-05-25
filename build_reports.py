@@ -128,28 +128,43 @@ pro_paths  = load_csv(DATA_DIR / "pro_paths.csv")
 candidates = load_csv(DATA_DIR / "candidates.csv")
 top_score  = load_csv(DATA_DIR / "top_score.csv")
 
-# Mapowanie czystych nazw
-NAME_MAP_PATH = DATA_DIR / "teamy_kluby_25_26_-_teamy_kluby_25_26.csv"
-if NAME_MAP_PATH.exists():
+# Mapowanie czystych nazw — szukamy pliku po wzorcu (różne warianty nazwy)
+NAME_MAP_PATH = None
+for candidate_dir in [DATA_DIR, Path(".")]:
+    if not candidate_dir.exists():
+        continue
+    matches = sorted(candidate_dir.glob("teamy_kluby_25_26*.csv"))
+    if matches:
+        NAME_MAP_PATH = matches[0]
+        break
+
+if NAME_MAP_PATH and NAME_MAP_PATH.exists():
+    print(f"  Mapowanie nazw z: {NAME_MAP_PATH}")
     name_map = load_csv(NAME_MAP_PATH)
-    # club_id → final_club_name (deduplikuj — bierz pierwszy non-null)
-    club_map = (
-        name_map.dropna(subset=["club_id", "final_club_name"])
-        .drop_duplicates("club_id")
-        .set_index("club_id")["final_club_name"]
-        .to_dict()
-    )
-    team_map = (
-        name_map.dropna(subset=["team_id", "final_team_name"])
-        .drop_duplicates("team_id")
-        .set_index("team_id")["final_team_name"]
-        .to_dict()
-    )
-    print(f"  Mapowanie: {len(club_map)} klubów, {len(team_map)} teamów")
+    # Sprawdź czy ma wymagane kolumny
+    needed = {"club_id", "final_club_name", "team_id", "final_team_name"}
+    if not needed.issubset(set(name_map.columns)):
+        print(f"  UWAGA: plik nie ma kolumn {needed - set(name_map.columns)} "
+              f"— ma {name_map.columns.tolist()}. Używam nazw z bazy.")
+        club_map, team_map = {}, {}
+    else:
+        club_map = (
+            name_map.dropna(subset=["club_id", "final_club_name"])
+            .drop_duplicates("club_id")
+            .set_index("club_id")["final_club_name"]
+            .to_dict()
+        )
+        team_map = (
+            name_map.dropna(subset=["team_id", "final_team_name"])
+            .drop_duplicates("team_id")
+            .set_index("team_id")["final_team_name"]
+            .to_dict()
+        )
+        print(f"  Mapowanie: {len(club_map)} klubów, {len(team_map)} teamów")
 else:
     club_map = {}
     team_map = {}
-    print("  UWAGA: brak teamy_kluby_25_26.csv — używam nazw z bazy")
+    print("  UWAGA: nie znaleziono pliku teamy_kluby_25_26*.csv — używam nazw z bazy")
 
 
 def clean_club(cid, fallback):
@@ -216,6 +231,26 @@ def pick_club_team(df):
     return df
 
 candidates = pick_club_team(candidates)
+
+# Mapa: player_id → czy KIEDYKOLWIEK grał w E/1L/2L (z flagi ever_central w SQL v5).
+# Fallback: jeśli kolumny brak (stary CSV), wykryj z historii (level >= 11).
+if "ever_central" in candidates.columns:
+    candidates["ever_central"] = (
+        candidates["ever_central"].astype(str).str.lower().isin(["true", "1", "1.0"])
+    )
+    ever_central_map = (
+        candidates.groupby("player_id")["ever_central"].max().to_dict()
+    )
+    print(f"  Flaga ever_central z SQL: {sum(ever_central_map.values())} powracających")
+else:
+    # Fallback dla starych danych bez kolumny
+    central_players = set(
+        candidates[candidates["league_level"] >= 11]["player_id"].unique()
+    )
+    ever_central_map = {pid: (pid in central_players)
+                        for pid in candidates["player_id"].unique()}
+    print(f"  Flaga ever_central (fallback z historii): "
+          f"{sum(ever_central_map.values())} powracających")
 
 print(f"  Pro paths:  {len(pro_paths)} wierszy, {pro_paths['player_id'].nunique()} graczy")
 print(f"  Candidates: {len(candidates)} wierszy, {candidates['player_id'].nunique()} graczy")
@@ -548,6 +583,7 @@ print("\nPrzetwarzam kandydatów...")
 t0 = time.time()
 total = cand_seasons["player_id"].nunique()
 results = []
+results_returning = []
 
 for idx, (pid, grp) in enumerate(cand_seasons.groupby("player_id"), 1):
     if idx % 5000 == 0:
@@ -559,6 +595,7 @@ for idx, (pid, grp) in enumerate(cand_seasons.groupby("player_id"), 1):
         continue
 
     name = grp["player_name"].iloc[0] if "player_name" in grp.columns else str(pid)
+    is_returning = bool(ever_central_map.get(pid, False))
     cur = grp.iloc[-1]
     cur_age = int(cur["age_in_season"])
     cur_level = cur["highest_level"]
@@ -680,7 +717,7 @@ for idx, (pid, grp) in enumerate(cand_seasons.groupby("player_id"), 1):
             "dist":        round(dist, 3),
         })
 
-    results.append({
+    record = {
         "player_id":   pid,
         "name":        name,
         "age":         cur_age,
@@ -694,13 +731,19 @@ for idx, (pid, grp) in enumerate(cand_seasons.groupby("player_id"), 1):
         "ocena":       ocena,
         "status":      status,
         "szansa":      szansa,
+        "returning":   is_returning,
         "history":     cand_history,
         "pro_matches": pro_histories,
         "cand_ages":   cand_ages,  # zapamiętaj dla highlight
-    })
+    }
+    if is_returning:
+        results_returning.append(record)
+    else:
+        results.append(record)
 
 results.sort(key=lambda x: -x["ocena"])
-print(f"  {len(results)} kandydatów po filtrach ({time.time()-t0:.0f}s)")
+results_returning.sort(key=lambda x: -x["ocena"])
+print(f"  Debiutanci: {len(results)} | Powracający: {len(results_returning)} ({time.time()-t0:.0f}s)")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -803,13 +846,16 @@ def calc_similarity_v2(cand_hist, pro_hist, cand_ages):
     }
 
 
-def build_ranking_sheet(wb, results):
+def build_ranking_sheet(wb, results, sheet_name="Ranking", use_active=True):
     """
     Ranking + trajektorie: dla każdego kandydata pokazujemy 4 sezony (s, s-1, s-2, s-3)
     KANDYDATA, te same 4 wieki PRO-MATCH'a, i % zgodności.
     """
-    ws = wb.active
-    ws.title = "Ranking"
+    if use_active:
+        ws = wb.active
+        ws.title = sheet_name
+    else:
+        ws = wb.create_sheet(sheet_name)
 
     # 4 sezony: s (najnowszy), s-1, s-2, s-3 (najstarszy)
     # W kolumnach: od s-3 do s, czyli chronologicznie od najstarszego
@@ -1073,8 +1119,11 @@ def build_comparison_sheet(wb, results, n_top=100):
 
 
 wb_cand = Workbook()
-build_ranking_sheet(wb_cand, results)
+build_ranking_sheet(wb_cand, results, sheet_name="Ranking", use_active=True)
 build_comparison_sheet(wb_cand, results, n_top=100)
+if results_returning:
+    build_ranking_sheet(wb_cand, results_returning,
+                        sheet_name="Powracający (1L-2L)", use_active=False)
 wb_cand.save(DATA_DIR / "candidate_matches.xlsx")
 print(f"  Zapisano: data/candidate_matches.xlsx ({time.time()-t0:.1f}s)")
 
@@ -1087,7 +1136,8 @@ print(f"""
 ║    • Detale:      {len(pro_seasons):>5} wierszy{' '*49}║
 ║                                                                              ║
 ║  data/candidate_matches.xlsx                                                 ║
-║    • Ranking:     {len(results):>5} kandydatów{' '*45}║
+║    • Ranking (debiutanci):    {len(results):>5}{' '*42}║
+║    • Powracający (1L/2L):      {len(results_returning):>5}{' '*41}║
 ║    • Top 100:     wiek-do-wieku matching (kandydat vs pro w TYCH wiekach)    ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
 """)

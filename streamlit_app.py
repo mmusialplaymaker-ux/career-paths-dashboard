@@ -39,9 +39,14 @@ def load_data():
     if not cand_path.exists():
         cand_path = DATA_DIR / "candidate_matches.xlsx"
     cand_ranking = pd.read_excel(cand_path, sheet_name="Ranking")
+    # Arkusz powracających (opcjonalny — może nie istnieć w starych plikach)
+    try:
+        returning = pd.read_excel(cand_path, sheet_name="Powracający (1L-2L)")
+    except Exception:
+        returning = None
     pro_debut = pd.read_excel(DATA_DIR / "pro_career_paths.xlsx", sheet_name="Pro debiut")
     pro_detail = pd.read_excel(DATA_DIR / "pro_career_paths.xlsx", sheet_name="Detale")
-    return cand_ranking, pro_debut, pro_detail
+    return cand_ranking, returning, pro_debut, pro_detail
 
 
 @st.cache_data
@@ -66,7 +71,7 @@ def load_candidates_raw():
 
 
 try:
-    cand_ranking, pro_debut, pro_detail = load_data()
+    cand_ranking, returning, pro_debut, pro_detail = load_data()
     pro_paths_raw = load_pro_paths_raw()
     candidates_raw = load_candidates_raw()
 except FileNotFoundError as e:
@@ -152,6 +157,21 @@ aktywności (15%) i jakości matcha z pro (25%).
 if page == "📊 Ranking kandydatów":
     st.title("Ranking kandydatów")
 
+    # Przełącznik kategorii
+    if returning is not None and len(returning) > 0:
+        kategoria = st.radio(
+            "Kategoria:",
+            ["🌱 Debiutanci (nigdy nie grali w E/1L/2L)",
+             f"🔄 Powracający (byli już w 1L/2L) — {len(returning)}"],
+            horizontal=True,
+        )
+        source_df = cand_ranking if kategoria.startswith("🌱") else returning
+        if kategoria.startswith("🔄"):
+            st.info("To zawodnicy którzy **już grali** w 1./2. lidze, dziś są niżej. "
+                    "To nie są prognozy pierwszego debiutu — to potencjalne powroty.")
+    else:
+        source_df = cand_ranking
+
     # Filtry
     c1, c2, c3, c4 = st.columns(4)
     with c1:
@@ -159,18 +179,18 @@ if page == "📊 Ranking kandydatów":
     with c2:
         min_ocena = st.slider("Min. ocena", 0, 100, 50)
     with c3:
-        levels = sorted(cand_ranking["Obecny poziom"].dropna().unique().tolist())
+        levels = sorted(source_df["Obecny poziom"].dropna().unique().tolist())
         sel_levels = st.multiselect("Obecny poziom", levels, default=levels)
     with c4:
-        activities = sorted(cand_ranking["Aktywność"].dropna().unique().tolist())
+        activities = sorted(source_df["Aktywność"].dropna().unique().tolist())
         sel_act = st.multiselect("Aktywność", activities, default=activities)
 
-    df = cand_ranking[
-        (cand_ranking["Wiek"] >= age_range[0]) &
-        (cand_ranking["Wiek"] <= age_range[1]) &
-        (cand_ranking["Ocena"] >= min_ocena) &
-        (cand_ranking["Obecny poziom"].isin(sel_levels)) &
-        (cand_ranking["Aktywność"].isin(sel_act))
+    df = source_df[
+        (source_df["Wiek"] >= age_range[0]) &
+        (source_df["Wiek"] <= age_range[1]) &
+        (source_df["Ocena"] >= min_ocena) &
+        (source_df["Obecny poziom"].isin(sel_levels)) &
+        (source_df["Aktywność"].isin(sel_act))
     ].copy()
 
     st.caption(f"Po filtrach: **{len(df)} kandydatów**")
