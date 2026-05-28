@@ -653,6 +653,14 @@ for idx, (pid, grp) in enumerate(cand_seasons.groupby("player_id"), 1):
     raw = 0.25*lvl_s + 0.20*min_s + 0.15*scr_s + 0.15*act_s + 0.25*match_s
     ocena = round(raw * 100, 1)
 
+    # Składowe oceny — zapisujemy żeby dashboard mógł pokazać bar chart "co napędza ocenę"
+    # Każda składowa = waga × wynik znormalizowany × 100. Suma = ocena.
+    drv_level     = round(0.25 * lvl_s   * 100, 1)
+    drv_minutes   = round(0.20 * min_s   * 100, 1)
+    drv_score     = round(0.15 * scr_s   * 100, 1)
+    drv_activity  = round(0.15 * act_s   * 100, 1)
+    drv_traj      = round(0.25 * match_s * 100, 1)
+
     status = status_from_ocena(ocena)
     szansa = calibrated_probability(ocena)
 
@@ -731,6 +739,11 @@ for idx, (pid, grp) in enumerate(cand_seasons.groupby("player_id"), 1):
         "ocena":       ocena,
         "status":      status,
         "szansa":      szansa,
+        "drv_level":   drv_level,
+        "drv_minutes": drv_minutes,
+        "drv_score":   drv_score,
+        "drv_activity": drv_activity,
+        "drv_traj":    drv_traj,
         "returning":   is_returning,
         "history":     cand_history,
         "pro_matches": pro_histories,
@@ -1124,6 +1137,27 @@ build_comparison_sheet(wb_cand, results, n_top=100)
 if results_returning:
     build_ranking_sheet(wb_cand, results_returning,
                         sheet_name="Powracający (1L-2L)", use_active=False)
+
+# ── Arkusz "Składowe oceny" — dla bar chartu w dashboardzie ──────────────────
+# Jeden wiersz na zawodnika (oba zbiory), kolumny = 5 składowych oceny.
+# Dashboard czyta to żeby pokazać "co napędza ocenę".
+drivers_rows = []
+for r in results + results_returning:
+    drivers_rows.append({
+        "Zawodnik":      r["name"],
+        "Ocena":         r["ocena"],
+        "Poziom":        r["drv_level"],
+        "Minuty":        r["drv_minutes"],
+        "Score":         r["drv_score"],
+        "Aktywność":     r["drv_activity"],
+        "Trajektoria":   r["drv_traj"],
+    })
+drivers_df = pd.DataFrame(drivers_rows)
+ws_drv = wb_cand.create_sheet("Składowe oceny")
+ws_drv.append(list(drivers_df.columns))
+for _, row in drivers_df.iterrows():
+    ws_drv.append(list(row))
+
 wb_cand.save(DATA_DIR / "candidate_matches.xlsx")
 print(f"  Zapisano: data/candidate_matches.xlsx ({time.time()-t0:.1f}s)")
 

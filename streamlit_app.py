@@ -44,9 +44,14 @@ def load_data():
         returning = pd.read_excel(cand_path, sheet_name="Powracający (1L-2L)")
     except Exception:
         returning = None
+    # Arkusz składowych oceny (do bar chartu w Dashboard i Szczegóły)
+    try:
+        drivers = pd.read_excel(cand_path, sheet_name="Składowe oceny")
+    except Exception:
+        drivers = None
     pro_debut = pd.read_excel(DATA_DIR / "pro_career_paths.xlsx", sheet_name="Pro debiut")
     pro_detail = pd.read_excel(DATA_DIR / "pro_career_paths.xlsx", sheet_name="Detale")
-    return cand_ranking, returning, pro_debut, pro_detail
+    return cand_ranking, returning, drivers, pro_debut, pro_detail
 
 
 @st.cache_data
@@ -71,7 +76,7 @@ def load_candidates_raw():
 
 
 try:
-    cand_ranking, returning, pro_debut, pro_detail = load_data()
+    cand_ranking, returning, drivers, pro_debut, pro_detail = load_data()
     pro_paths_raw = load_pro_paths_raw()
     candidates_raw = load_candidates_raw()
 except FileNotFoundError as e:
@@ -104,6 +109,79 @@ def calibrated_probability(ocena):
     return 0.4
 
 
+def auto_summary(cand_row, main_pro_name=None, pct_total=None, traj_df=None):
+    """
+    Wygeneruj 3-zdaniowe podsumowanie zawodnika z danych.
+    cand_row: wiersz z cand_ranking (Series)
+    main_pro_name: nazwa głównego match'a (string)
+    pct_total: % zgodności z głównym match'em
+    traj_df: DataFrame z trajektorią (kolumny: age_in_season, level, leagues)
+    """
+    name = cand_row["Zawodnik"]
+    wiek = int(cand_row["Wiek"])
+    poziom = cand_row["Obecny poziom"]
+    klub = cand_row["Klub"]
+    szansa = calibrated_probability(cand_row["Ocena"])
+
+    # Zdanie 1: kim jest
+    s1 = f"**{name}**, {wiek} lat, gra w {klub} ({poziom})."
+
+    # Zdanie 2: dynamika rozwoju z trajektorii
+    s2 = None
+    if traj_df is not None and len(traj_df) >= 2:
+        t = traj_df.sort_values("age_in_season").reset_index(drop=True)
+        first = t.iloc[0]
+        last = t.iloc[-1]
+        diff = int(last["level"] - first["level"])
+        n_seasons = len(t)
+        if diff >= 3:
+            s2 = (f"Skok o **{diff} poziomy** w ostatnich {n_seasons} sezonach "
+                  f"(wiek {int(first['age_in_season'])} → {int(last['age_in_season'])}).")
+        elif diff >= 1:
+            s2 = (f"Wzrost o {diff} poziom(y) w ostatnich {n_seasons} sezonach "
+                  f"(stabilna progresja).")
+        elif diff == 0:
+            s2 = f"Stabilny poziom przez ostatnie {n_seasons} sezony."
+        else:
+            s2 = f"Spadek o {abs(diff)} poziom(y) — wymaga uwagi."
+
+    # Zdanie 3: match z pro + szansa
+    s3_parts = []
+    if main_pro_name and pd.notna(main_pro_name) and main_pro_name != "—":
+        if pct_total is not None and pd.notna(pct_total):
+            try:
+                pct_val = float(str(pct_total).replace(",", "."))
+                s3_parts.append(f"Ścieżka **{pct_val:.0f}% zgodna** z {main_pro_name}")
+            except (ValueError, TypeError):
+                s3_parts.append(f"Najbliższa ścieżka: {main_pro_name}")
+        else:
+            s3_parts.append(f"Najbliższa ścieżka: {main_pro_name}")
+    s3_parts.append(f"szacowana szansa na centralny **~{szansa}%**")
+    s3 = ". ".join(s3_parts) + "."
+
+    return " ".join(filter(None, [s1, s2, s3]))
+
+
+def driver_components(zawodnik_name, drivers_df):
+    """
+    Zwróć słownik składowych oceny z arkusza 'Składowe oceny'.
+    Jeśli arkusz nie ma zawodnika → None (dashboard pokaże fallback).
+    """
+    if drivers_df is None:
+        return None
+    row = drivers_df[drivers_df["Zawodnik"] == zawodnik_name]
+    if len(row) == 0:
+        return None
+    r = row.iloc[0]
+    return {
+        "Poziom (25%)":      float(r["Poziom"]),
+        "Minuty (20%)":      float(r["Minuty"]),
+        "Score (15%)":       float(r["Score"]),
+        "Aktywność (15%)":   float(r["Aktywność"]),
+        "Trajektoria (25%)": float(r["Trajektoria"]),
+    }
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # SIDEBAR
 # ══════════════════════════════════════════════════════════════════════════════
@@ -111,8 +189,8 @@ def calibrated_probability(ocena):
 st.sidebar.title("⚽ Career Paths")
 page = st.sidebar.radio(
     "Strona",
-    ["📊 Ranking kandydatów", "🔍 Szczegóły kandydata", "📚 Encyklopedia pro",
-     "✅ Walidacja modelu"],
+    ["🏠 Dashboard", "📊 Ranking kandydatów", "🔍 Szczegóły kandydata",
+     "📚 Encyklopedia pro", "✅ Walidacja modelu"],
 )
 st.sidebar.divider()
 st.sidebar.caption(f"Kandydaci: {len(cand_ranking)}")
@@ -151,10 +229,102 @@ aktywności (15%) i jakości matcha z pro (25%).
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# STRONA 0: DASHBOARD — pierwsza co skaut widzi
+# ══════════════════════════════════════════════════════════════════════════════
+
+if page == "🏠 Dashboard":
+    st.title("Dashboard — przegląd")
+
+    # ── Kluczowe metryki ──────────────────────────────────────────────────────
+    n_total = len(cand_ranking)
+    n_wyj = (cand_ranking["Status"] == "★★★ Wyjątkowy").sum()
+    n_wys = (cand_ranking["Status"] == "★★ Wysoki").sum()
+    n_obi = (cand_ranking["Status"] == "★ Obiecujący").sum()
+    avg_szansa_top10 = cand_ranking.sort_values("Ocena", ascending=False).head(10)
+    avg_szansa_top10 = avg_szansa_top10["Szansa %"].str.replace("~","").str.replace("%","").astype(float).mean()
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Wyjątkowi", n_wyj, help="Ocena ≥ 85, szansa ~18.9%")
+    c2.metric("Wysocy", n_wys, help="Ocena 80–85, szansa ~3.5%")
+    c3.metric("Obiecujący", n_obi, help="Ocena 75–80, szansa ~3.1%")
+    c4.metric("Średnia szansa TOP10", f"{avg_szansa_top10:.1f}%")
+
+    st.divider()
+
+    # ── TOP 3 zawodników do obejrzenia ────────────────────────────────────────
+    st.subheader("🎯 Top 3 do obejrzenia w tym tygodniu")
+    st.caption("Najwyżej ocenieni kandydaci — czysta czołówka. Kliknij szczegóły poniżej żeby zobaczyć ścieżkę.")
+
+    top3 = cand_ranking.sort_values("Ocena", ascending=False).head(3)
+    cols = st.columns(3)
+    medals = ["🥇", "🥈", "🥉"]
+
+    for i, (col, (_, r)) in enumerate(zip(cols, top3.iterrows())):
+        with col:
+            st.markdown(f"### {medals[i]} {r['Zawodnik']}")
+            st.markdown(f"**{int(r['Wiek'])} lat** · {r['Obecny poziom']}")
+            st.markdown(f"*{r['Klub']}*")
+            # Wyróżnik: szansa jako duży zielony box
+            szansa_val = float(str(r['Szansa %']).replace("~","").replace("%",""))
+            if szansa_val >= 10:
+                st.success(f"**Szansa: {r['Szansa %']}**  \n{r['Status']}")
+            elif szansa_val >= 3:
+                st.info(f"**Szansa: {r['Szansa %']}**  \n{r['Status']}")
+            else:
+                st.warning(f"**Szansa: {r['Szansa %']}**  \n{r['Status']}")
+            # Mini info
+            st.caption(f"Minuty: {int(r['Minuty'])} · Mecze: {int(r['Mecze'])} · Score: {r['Score']:.3f}")
+            st.caption(f"Match: {r['Match #1 (główny)']} (% total: {r.get('% total', '—')})")
+
+    st.divider()
+
+    # ── Tabela "Awansowali" / top czołówka rankingu ───────────────────────────
+    st.subheader("📈 Top 20 ze statusem Wyjątkowy / Wysoki")
+    wyjatkowi_top = cand_ranking[cand_ranking["Status"].isin(["★★★ Wyjątkowy", "★★ Wysoki"])]\
+                    .sort_values("Ocena", ascending=False).head(20)
+    show_cols = ["#", "Zawodnik", "Wiek", "Klub", "Obecny poziom",
+                 "Ocena", "Status", "Szansa %", "Match #1 (główny)", "% total"]
+    show_cols = [c for c in show_cols if c in wyjatkowi_top.columns]
+    st.dataframe(wyjatkowi_top[show_cols], width="stretch", hide_index=True)
+
+    st.divider()
+
+    # ── Rozkład statusów ──────────────────────────────────────────────────────
+    st.subheader("📊 Rozkład statusów wśród wszystkich kandydatów")
+    status_counts = cand_ranking["Status"].value_counts()
+    # Posortuj wg hierarchii statusów
+    status_order = ["★★★ Wyjątkowy", "★★ Wysoki", "★ Obiecujący", "Obserwacja", "Tło"]
+    status_counts = status_counts.reindex([s for s in status_order if s in status_counts.index])
+
+    colors_map = {"★★★ Wyjątkowy": "#2ECC71", "★★ Wysoki": "#3498DB",
+                  "★ Obiecujący": "#F39C12", "Obserwacja": "#95A5A6", "Tło": "#BDC3C7"}
+    colors_list = [colors_map.get(s, "#BDC3C7") for s in status_counts.index]
+
+    fig = go.Figure(go.Bar(
+        x=status_counts.values,
+        y=status_counts.index,
+        orientation="h",
+        marker=dict(color=colors_list),
+        text=status_counts.values,
+        textposition="outside",
+    ))
+    fig.update_layout(
+        height=300,
+        xaxis_title="Liczba kandydatów",
+        margin=dict(l=120, r=40, t=20, b=30),
+        showlegend=False,
+    )
+    st.plotly_chart(fig, width="stretch")
+
+    st.info("💡 **Wskazówka:** ranking jest długi, ale realna wartość to ~67 Wyjątkowych "
+            "i ~293 Wysokich. Skup się na tej grupie, reszta to bazowy szum.")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # STRONA 1: RANKING
 # ══════════════════════════════════════════════════════════════════════════════
 
-if page == "📊 Ranking kandydatów":
+elif page == "📊 Ranking kandydatów":
     st.title("Ranking kandydatów")
 
     # Przełącznik kategorii
@@ -235,13 +405,79 @@ elif page == "🔍 Szczegóły kandydata":
     selected = st.selectbox("Kandydat:", options=cand_names, index=0)
     cand = cand_ranking[cand_ranking["Zawodnik"] == selected].iloc[0]
 
+    # Trajektoria kandydata — potrzebna do auto-summary i wykresów niżej
+    def get_player_trajectory(df, player_name):
+        """Zwraca DataFrame: age, level, minutes, score, leagues_str dla każdego sezonu."""
+        p = df[df["player_name"] == player_name].copy()
+        if len(p) == 0:
+            return pd.DataFrame()
+        p["league_label"] = p["league_name"] + " (" + p["total_minutes"].astype(int).astype(str) + " min)"
+        agg = p.groupby(["season_id", "age_in_season"]).agg(
+            level=("league_level", "max"),
+            minutes=("total_minutes", "sum"),
+            matches=("matches_played", "sum"),
+            score=("avg_score", "mean"),
+            leagues=("league_label", lambda s: " + ".join(sorted(s.unique()))),
+        ).reset_index().sort_values("age_in_season")
+        return agg
+
+    cand_traj = get_player_trajectory(candidates_raw, selected)
+
+    st.divider()
+
+    # ── Panel 0: Auto-summary (3 zdania w nagłówku) ───────────────────────────
+    main_name = cand.get("Match #1 (główny)")
+    pct_total = cand.get("% total")
+    summary_text = auto_summary(
+        cand_row=cand,
+        main_pro_name=main_name if pd.notna(main_name) and main_name != "—" else None,
+        pct_total=pct_total,
+        traj_df=cand_traj,
+    )
+    st.markdown(f"### {summary_text}")
+
+    # ── Panel 0b: Bar chart "co napędza ocenę" ────────────────────────────────
+    components = driver_components(selected, drivers)
+    if components is not None:
+        st.markdown("**Co napędza ocenę:**")
+        comp_df = pd.DataFrame({
+            "Składowa": list(components.keys()),
+            "Wkład w ocenę": list(components.values()),
+        })
+        # Kolory: zielony dla dużych, czerwony dla małych
+        max_possible = {"Poziom (25%)": 25, "Minuty (20%)": 20, "Score (15%)": 15,
+                        "Aktywność (15%)": 15, "Trajektoria (25%)": 25}
+        comp_df["pct_max"] = comp_df.apply(
+            lambda r: r["Wkład w ocenę"] / max_possible[r["Składowa"]] * 100, axis=1
+        )
+        comp_df["color"] = comp_df["pct_max"].apply(
+            lambda p: "#2ECC71" if p >= 60 else ("#F39C12" if p >= 35 else "#E74C3C")
+        )
+
+        fig_drv = go.Figure(go.Bar(
+            x=comp_df["Wkład w ocenę"],
+            y=comp_df["Składowa"],
+            orientation="h",
+            marker=dict(color=comp_df["color"]),
+            text=[f"{v:.1f} pkt ({p:.0f}% max)" for v, p in zip(comp_df["Wkład w ocenę"], comp_df["pct_max"])],
+            textposition="outside",
+        ))
+        fig_drv.update_layout(
+            height=260,
+            xaxis_title=f"Wkład w ocenę {cand['Ocena']:.1f}",
+            margin=dict(l=130, r=120, t=10, b=30),
+            showlegend=False,
+        )
+        st.plotly_chart(fig_drv, width="stretch")
+        st.caption("🟢 ≥60% maksymalnego wkładu · 🟠 35–60% · 🔴 <35%. "
+                   "Pokazuje DLACZEGO ten zawodnik dostał taką ocenę.")
+
     st.divider()
 
     # ── Panel 1: Karta 4 kolumn (kandydat + 3 pro) ────────────────────────────
     st.subheader("📋 Karta porównawcza")
 
     # Sprawdź czy są backupy
-    main_name = cand.get("Match #1 (główny)")
     b1_name = cand.get("Match #2 (backup)")
     b2_name = cand.get("Match #3 (backup)")
 
@@ -302,25 +538,7 @@ elif page == "🔍 Szczegóły kandydata":
     # ── Panel 2-4: Wykresy ────────────────────────────────────────────────────
     st.subheader("📈 Trajektoria sezon po sezonie")
 
-    # Dane kandydata: wszystkie sezony z candidates_raw, najwyższy poziom per sezon
-    def get_player_trajectory(df, player_name):
-        """Zwraca DataFrame: age, level, minutes, score, leagues_str dla każdego sezonu."""
-        # df: candidates_raw lub pro_paths_raw
-        p = df[df["player_name"] == player_name].copy()
-        if len(p) == 0:
-            return pd.DataFrame()
-        # Per sezon: najwyższy level + suma minut + średni score + lista lig
-        p["league_label"] = p["league_name"] + " (" + p["total_minutes"].astype(int).astype(str) + " min)"
-        agg = p.groupby(["season_id", "age_in_season"]).agg(
-            level=("league_level", "max"),
-            minutes=("total_minutes", "sum"),
-            matches=("matches_played", "sum"),
-            score=("avg_score", "mean"),
-            leagues=("league_label", lambda s: " + ".join(sorted(s.unique()))),
-        ).reset_index().sort_values("age_in_season")
-        return agg
-
-    cand_traj = get_player_trajectory(candidates_raw, selected)
+    # Trajektorie pro (cand_traj jest już policzona wyżej)
     main_traj = get_player_trajectory(pro_paths_raw, main_name) if main_pro is not None else pd.DataFrame()
     b1_traj = get_player_trajectory(pro_paths_raw, b1_name) if b1_pro is not None else pd.DataFrame()
     b2_traj = get_player_trajectory(pro_paths_raw, b2_name) if b2_pro is not None else pd.DataFrame()

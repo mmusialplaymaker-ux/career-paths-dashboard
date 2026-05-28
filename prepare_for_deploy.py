@@ -48,13 +48,25 @@ candidates_small.to_csv(out_cand, index=False, encoding="utf-8-sig")
 size_mb = out_cand.stat().st_size / 1024 / 1024
 print(f"  Zapisano: {out_cand} ({size_mb:.1f} MB, {len(candidates_small)} wierszy)")
 
-# ── Lekki candidate_matches_deploy.xlsx (oba arkusze) ─────────────────────────
+# ── Lekki candidate_matches_deploy.xlsx (3 arkusze) ─────────────────────────
 print("\nTworzę lekki candidate_matches_deploy.xlsx...")
+
+# Arkusz Składowe oceny — tylko dla zawodników którzy są w deploy
+try:
+    drivers = pd.read_excel(SRC, sheet_name="Składowe oceny")
+    drivers_deploy = drivers[drivers["Zawodnik"].isin(top_names)].copy()
+    print(f"  Składowe oceny: {len(drivers_deploy)} zawodników")
+except Exception as e:
+    drivers_deploy = None
+    print(f"  (brak arkusza Składowe oceny: {e})")
+
 out_xlsx = DATA_DIR / "candidate_matches_deploy.xlsx"
 with pd.ExcelWriter(out_xlsx, engine="openpyxl") as writer:
     ranking_top.to_excel(writer, sheet_name="Ranking", index=False)
     if returning_top is not None:
         returning_top.to_excel(writer, sheet_name=RETURNING_SHEET, index=False)
+    if drivers_deploy is not None:
+        drivers_deploy.to_excel(writer, sheet_name="Składowe oceny", index=False)
 print(f"  Zapisano: {out_xlsx}")
 
 size_xlsx = out_xlsx.stat().st_size / 1024 / 1024
